@@ -1,5 +1,4 @@
 streamlit
-requests
-Pillow
+fal-client
 python-dotenv
-tenacity
+Pillow
