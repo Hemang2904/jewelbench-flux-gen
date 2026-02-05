@@ -2,19 +2,20 @@ import streamlit as st
 import fal_client
 import io
 import zipfile
-import hashlib
 import os
 import asyncio
 import base64
 import random
 import re
+import requests
 from PIL import Image
 
 # --- Configuration ---
-st.set_page_config(page_title="JewelBench - Advanced Variation", layout="wide")
+st.set_page_config(page_title="Jewelry AI Automator", layout="wide")
 
-# Using Flux Pro 2.0 Edit as requested
-MODEL_ENDPOINT = "fal-ai/flux-2-pro/edit"
+# Endpoints
+VISION_ENDPOINT = "fal-ai/llava-v1.5-13b"
+FLUX_EDIT_ENDPOINT = "fal-ai/flux-2-pro/edit"
 
 def get_image_base64(image):
     """Convert PIL Image to base64 for API upload."""
@@ -35,159 +36,146 @@ def parse_dynamic_prompt(prompt):
             prompt = prompt.replace(match.group(0), choice, 1)
     return prompt
 
-async def generate_variation_async(image_b64, prompt, strength, guidance):
-    """
-    Async wrapper for Fal.ai Flux Image-to-Image.
-    """
-    try:
-        # Prepare arguments based on common Fal.ai patterns for Flux
-        # Pro models often manage their own steps/safety, so we keep args minimal to avoid errors.
-        args = {
-            "prompt": prompt,
-            "image_url": image_b64,
-            "strength": strength,
-            "guidance_scale": guidance
-        }
-        
-        # Add safety tolerance if supported (common in Pro models)
-        # args["safety_tolerance"] = "2" 
-
-        handler = await fal_client.submit_async(
-            MODEL_ENDPOINT,
-            arguments=args,
-        )
-        result = await handler.get()
-        image_url = result['images'][0]['url']
-        
-        # Download immediately
-        import requests
-        resp = requests.get(image_url)
-        return resp.content, prompt  # Return content AND the resolved prompt used
-    except Exception as e:
-        print(f"Error: {e}")
-        return None, None
-
-# --- UI Layout ---
-st.title("💎 JewelBench: Structural Variation Engine")
+# --- Main App ---
+st.title("💎 Jewelry AI Automator: Identify & Redesign")
 st.markdown("""
-**Advanced Image-to-Image Logic:**
-*   **Denoising Strength (0.60 - 0.75):** Controls how much the design changes vs. keeping original shape.
-*   **Dynamic Prompts:** Use `[gold | platinum]` syntax to auto-randomize batches.
+**Workflow:**
+1.  **Vision ID:** AI identifies the metal, motif, and key features of your master photo.
+2.  **Flux Redesign:** Automatically redesigns the piece into new styles (Art Deco, Minimalist, etc.) using `fal-ai/flux-2-pro/edit`.
 """)
 
-# Sidebar Controls
+# Sidebar
 with st.sidebar:
     api_key_input = st.text_input("Fal.ai API Key", type="password")
     if api_key_input:
         os.environ["FAL_KEY"] = api_key_input
+    elif "FAL_KEY" in st.secrets:
+        os.environ["FAL_KEY"] = st.secrets["FAL_KEY"]
     
-    # Allow endpoint override
-    st.markdown("### Model Settings")
-    custom_model = st.text_input("Model Endpoint", value=MODEL_ENDPOINT, help="Change if using a specific finetune or new release like 'fal-ai/flux-2-pro/edit'")
-    if custom_model:
-        MODEL_ENDPOINT = custom_model
+    st.markdown("### Batch Settings")
+    batch_size = st.select_slider("Variations per Style", options=[1, 5, 10, 25], value=5)
+    
+    st.markdown("### Redesign Styles")
+    style_art_deco = st.checkbox("Art Deco (Gold #FFD700)", value=True)
+    style_minimal = st.checkbox("Minimalist (Rose #E6C2B4)", value=False)
+    style_pavé = st.checkbox("Pavé Setting (Platinum #E5E4E2)", value=False)
 
-    st.markdown("### 1. Structural Parameters")
-    strength = st.slider(
-        "Denoising Strength", 0.1, 1.0, 0.65, 0.01,
-        help="0.60-0.75 is the 'Sweet Spot'. Lower = closer to original. Higher = more hallucination."
-    )
-    
-    guidance = st.slider(
-        "Guidance Scale", 1.0, 20.0, 6.0, 0.5,
-        help="Higher values force the model to follow the prompt text strictly."
-    )
-    
-    st.markdown("### 2. Batch Settings")
-    batch_size = st.select_slider("Batch Size", options=[10, 25, 50, 75, 100], value=10)
+uploaded_file = st.file_uploader("Upload Master Jewelry Photo", type=['png', 'jpg', 'jpeg', 'webp'])
 
-# Main Area
-col1, col2 = st.columns([1, 1])
+if uploaded_file:
+    # Display Original
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.image(uploaded_file, caption="Master Design", use_container_width=True)
+        input_img = Image.open(uploaded_file)
+        img_b64 = get_image_base64(input_img)
 
-with col1:
-    st.subheader("Input")
-    uploaded_file = st.file_uploader("Reference Jewelry Image", type=["jpg", "png", "jpeg"])
-    
-    default_prompt = "Macro shot of a [solitaire | halo | three-stone | pavé] engagement ring, [white gold | platinum | rose gold] band, [round cut | emerald cut | pear shape] center diamond, intricate filigree details, photorealistic, 8k, sharp focus, 3/4 angle view"
-    
-    base_prompt = st.text_area(
-        "Dynamic Prompt (Use [A | B] for random variations)", 
-        default_prompt,
-        height=150
-    )
+    with col2:
+        if st.button("🚀 Analyze & Generate Batch", type="primary"):
+            if not os.environ.get("FAL_KEY"):
+                st.error("Please provide Fal.ai API Key.")
+                st.stop()
 
-with col2:
-    if uploaded_file:
-        st.image(uploaded_file, caption="Structural Reference", width=300)
-    else:
-        st.info("Upload an image to define the 'Skeleton' of the jewelry.")
+            # 1. VISION IDENTIFICATION
+            with st.spinner("🔍 Identifying jewelry features (Metal, Motif, Gems)..."):
+                try:
+                    id_handler = fal_client.submit(
+                        VISION_ENDPOINT,
+                        arguments={
+                            "image_url": img_b64,
+                            "prompt": "Describe this jewelry piece in detail. Identify the metal color, the main gemstone shape, the setting style, and any specific motifs (like floral, geometric, signet, etc)."
+                        }
+                    )
+                    jewelry_info = id_handler.get()
+                    description = jewelry_info['output']
+                    st.success(f"**Identified:** {description}")
+                    st.session_state['description'] = description
+                except Exception as e:
+                    st.error(f"Vision Analysis Failed: {e}")
+                    st.stop()
 
-# Generation Logic
-if st.button("Generate Variations", type="primary"):
-    if not api_key_input:
-        st.error("Missing API Key.")
-        st.stop()
-    if not uploaded_file:
-        st.error("Please upload a reference image.")
-        st.stop()
-        
-    # Prepare Input
-    input_img = Image.open(uploaded_file)
-    img_b64 = get_image_base64(input_img)
-    
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    
-    results = []
-    
-    async def run_batch():
-        tasks = []
-        # Create a unique prompt for each image in the batch
-        for _ in range(batch_size):
-            # Resolve the dynamic prompt (e.g. pick "Halo" and "Platinum")
-            resolved_prompt = parse_dynamic_prompt(base_prompt)
-            tasks.append(generate_variation_async(img_b64, resolved_prompt, strength, guidance))
-        
-        # Execute in chunks
-        chunk_size = 4  # Fal concurrency limit safe guard
-        completed = 0
-        
-        for i in range(0, len(tasks), chunk_size):
-            chunk = tasks[i:i+chunk_size]
-            batch_results = await asyncio.gather(*chunk)
+            # 2. PREPARE PROMPTS BASED ON STYLES
+            prompts_to_run = []
             
-            for img_bytes, used_prompt in batch_results:
-                if img_bytes:
-                    results.append({"image": img_bytes, "prompt": used_prompt})
+            if style_art_deco:
+                base = f"Modify @image1: Transform this {description} into a vintage Art Deco style. REPLACE the setting with geometric patterns. Change metal to #FFD700 (Yellow Gold). Keep the center stone shape but add baguette side stones. High jewelry photography, 8k."
+                prompts_to_run.extend([(base, "Art Deco") for _ in range(batch_size)])
             
-            completed += len(chunk)
-            progress_bar.progress(min(completed / batch_size, 1.0))
-            status_text.text(f"Generated {len(results)} / {batch_size} variations...")
+            if style_minimal:
+                base = f"Modify @image1: Transform this {description} into a modern Minimalist style. REMOVE intricate details. Change metal to #E6C2B4 (Rose Gold). Make the band smooth and thin. Focus on the center stone. Studio lighting."
+                prompts_to_run.extend([(base, "Minimalist") for _ in range(batch_size)])
+                
+            if style_pavé:
+                base = f"Modify @image1: Transform this {description} into a luxury Pavé style. REPLACE the band surface with micro-pavé diamonds. Change metal to #E5E4E2 (Platinum). Highly reflective, sparkle, cinematic lighting."
+                prompts_to_run.extend([(base, "Pavé") for _ in range(batch_size)])
 
-    asyncio.run(run_batch())
+            # 3. GENERATE VARIATIONS
+            results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            async def run_generations():
+                tasks = []
+                for p_text, style_name in prompts_to_run:
+                    # Async submission to Flux Pro Edit
+                    # Note: Flux Pro Edit takes "image_url" or "image_urls" depending on strict version.
+                    # We use the standard pattern for Edit models.
+                    tasks.append(fal_client.submit_async(
+                        FLUX_EDIT_ENDPOINT,
+                        arguments={
+                            "prompt": p_text,
+                            "image_url": img_b64, 
+                            "strength": 0.75, # Strong edit for style transfer
+                            "guidance_scale": 7.5
+                        }
+                    ))
+                
+                # Run in chunks to be safe
+                chunk_size = 4
+                completed = 0
+                
+                for i in range(0, len(tasks), chunk_size):
+                    chunk = tasks[i:i+chunk_size]
+                    batch_responses = await asyncio.gather(*chunk)
+                    
+                    for resp_handler in batch_responses:
+                        try:
+                            res = await resp_handler.get()
+                            img_url = res['images'][0]['url']
+                            # Download content
+                            img_data = requests.get(img_url).content
+                            # Find which prompt this belonged to (approximate mapping or simple index)
+                            # For simplicity in this loop, we just append. 
+                            # (Real prod code would map task-to-prompt more strictly)
+                            results.append(img_data)
+                        except Exception as e:
+                            print(f"Gen Error: {e}")
+                    
+                    completed += len(chunk)
+                    progress_bar.progress(min(completed / len(prompts_to_run), 1.0))
+                    status_text.text(f"Generated {len(results)} / {len(prompts_to_run)} designs...")
 
-    # --- Results ---
-    if results:
-        st.success("Generation Complete!")
-        
-        # Gallery with Prompt Details
-        st.markdown("### Variations")
-        cols = st.columns(3)
-        for idx, item in enumerate(results):
-            with cols[idx % 3]:
-                st.image(item["image"], caption=f"#{idx+1}: {item['prompt'][:60]}...", use_container_width=True)
-        
-        # ZIP Download
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w") as zf:
-            for idx, item in enumerate(results):
-                # Clean prompt for filename
-                clean_name = re.sub(r'[^a-zA-Z0-9]', '_', item['prompt'][:30])
-                zf.writestr(f"var_{idx+1}_{clean_name}.jpg", item["image"])
-        
-        st.download_button(
-            "Download All Images (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name="structural_variations.zip",
-            mime="application/zip"
-        )
+            asyncio.run(run_generations())
+
+            # 4. DISPLAY & DOWNLOAD
+            if results:
+                st.success("Redesign Complete!")
+                
+                # Gallery
+                cols = st.columns(4)
+                for idx, img_bytes in enumerate(results):
+                    with cols[idx % 4]:
+                        st.image(img_bytes, caption=f"Var #{idx+1}", use_container_width=True)
+                
+                # Zip
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w") as zf:
+                    for idx, img_bytes in enumerate(results):
+                        zf.writestr(f"redesign_{idx+1}.jpg", img_bytes)
+                
+                st.download_button(
+                    "Download All Variations",
+                    data=zip_buffer.getvalue(),
+                    file_name="jewelbench_redesigns.zip",
+                    mime="application/zip"
+                )
