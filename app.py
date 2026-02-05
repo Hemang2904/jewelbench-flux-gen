@@ -43,16 +43,21 @@ async def generate_variation_async(image_b64, prompt, strength, guidance):
     Async wrapper for Fal.ai Flux Image-to-Image.
     """
     try:
+        # Prepare arguments based on common Fal.ai patterns for Flux
+        # Pro models often manage their own steps/safety, so we keep args minimal to avoid errors.
+        args = {
+            "prompt": prompt,
+            "image_url": image_b64,
+            "strength": strength,
+            "guidance_scale": guidance
+        }
+        
+        # Add safety tolerance if supported (common in Pro models)
+        # args["safety_tolerance"] = "2" 
+
         handler = await fal_client.submit_async(
             MODEL_ENDPOINT,
-            arguments={
-                "prompt": prompt,
-                "image_url": image_b64,
-                "strength": strength,  # Denoising strength (0.60 - 0.75)
-                "guidance_scale": guidance, # Guidance (5.0 - 7.0)
-                "num_inference_steps": 40,
-                "enable_safety_checker": False
-            },
+            arguments=args,
         )
         result = await handler.get()
         image_url = result['images'][0]['url']
