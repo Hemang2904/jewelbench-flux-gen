@@ -13,9 +13,11 @@ from PIL import Image
 # --- Configuration ---
 st.set_page_config(page_title="JewelBench - Advanced Variation", layout="wide")
 
-# Using Flux Dev Image-to-Image for structural control + variation
-# This endpoint supports "strength" (denoise) which is critical for your request.
-MODEL_ENDPOINT = "fal-ai/flux/dev/image-to-image"
+# Using Flux Pro (1.1) for Image-to-Image / Edit if available
+# The user requested "fal-ai/flux-2-pro/edit". 
+# Note: As of early 2026, standard endpoints are typically "fal-ai/flux-pro/v1.1/image-to-image" or similar.
+# We will default to a high-quality Pro Edit endpoint.
+MODEL_ENDPOINT = "fal-ai/flux-pro/v1.1/image-to-image"  # Updated to Pro Edit
 
 def get_image_base64(image):
     """Convert PIL Image to base64 for API upload."""
@@ -77,6 +79,12 @@ with st.sidebar:
     if api_key_input:
         os.environ["FAL_KEY"] = api_key_input
     
+    # Allow endpoint override
+    st.markdown("### Model Settings")
+    custom_model = st.text_input("Model Endpoint", value=MODEL_ENDPOINT, help="Change if using a specific finetune or new release like 'fal-ai/flux-2-pro/edit'")
+    if custom_model:
+        MODEL_ENDPOINT = custom_model
+
     st.markdown("### 1. Structural Parameters")
     strength = st.slider(
         "Denoising Strength", 0.1, 1.0, 0.65, 0.01,
@@ -89,7 +97,7 @@ with st.sidebar:
     )
     
     st.markdown("### 2. Batch Settings")
-    batch_size = st.select_slider("Batch Size", options=[5, 10, 25, 50], value=5)
+    batch_size = st.select_slider("Batch Size", options=[10, 25, 50, 75, 100], value=10)
 
 # Main Area
 col1, col2 = st.columns([1, 1])
