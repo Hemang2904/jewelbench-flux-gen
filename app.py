@@ -5,146 +5,179 @@ import zipfile
 import hashlib
 import os
 import asyncio
+import base64
+import random
+import re
 from PIL import Image
 
 # --- Configuration ---
-st.set_page_config(page_title="JewelBench - Flux Generator", layout="wide")
+st.set_page_config(page_title="JewelBench - Advanced Variation", layout="wide")
 
-# Valid Fal.ai Models for High Quality
-# flux-pro/v1.1-ultra is currently top-tier for detail/photorealism
-MODEL_ENDPOINT = "fal-ai/flux-pro/v1.1-ultra"
+# Using Flux Dev Image-to-Image for structural control + variation
+# This endpoint supports "strength" (denoise) which is critical for your request.
+MODEL_ENDPOINT = "fal-ai/flux/dev/image-to-image"
 
-def get_image_bytes(image):
-    """Convert PIL Image to bytes for upload/hashing."""
+def get_image_base64(image):
+    """Convert PIL Image to base64 for API upload."""
     buffered = io.BytesIO()
     image.save(buffered, format="JPEG", quality=95)
-    return buffered.getvalue()
+    return "data:image/jpeg;base64," + base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def calculate_hash(image_bytes):
-    return hashlib.md5(image_bytes).hexdigest()
-
-async def generate_variation_async(prompt, aspect_ratio="3:4"):
+def parse_dynamic_prompt(prompt):
     """
-    Async wrapper for Fal.ai generation.
+    Parses prompts with syntax like [option1 | option2 | option3].
+    Returns a single resolved prompt by picking one option at random.
+    """
+    while '[' in prompt and ']' in prompt:
+        match = re.search(r'\[(.*?)\]', prompt)
+        if match:
+            options = match.group(1).split('|')
+            choice = random.choice(options).strip()
+            prompt = prompt.replace(match.group(0), choice, 1)
+    return prompt
+
+async def generate_variation_async(image_b64, prompt, strength, guidance):
+    """
+    Async wrapper for Fal.ai Flux Image-to-Image.
     """
     try:
-        # Fal client handles the queueing and result fetching automatically
         handler = await fal_client.submit_async(
             MODEL_ENDPOINT,
             arguments={
                 "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
-                "safety_tolerance": "2",
-                "output_format": "jpeg"
+                "image_url": image_b64,
+                "strength": strength,  # Denoising strength (0.60 - 0.75)
+                "guidance_scale": guidance, # Guidance (5.0 - 7.0)
+                "num_inference_steps": 40,
+                "enable_safety_checker": False
             },
         )
         result = await handler.get()
         image_url = result['images'][0]['url']
         
-        # Download image data immediately to store in memory
+        # Download immediately
         import requests
         resp = requests.get(image_url)
-        return resp.content
+        return resp.content, prompt  # Return content AND the resolved prompt used
     except Exception as e:
         print(f"Error: {e}")
-        return None
+        return None, None
 
 # --- UI Layout ---
-st.title("💎 JewelBench: Flux (Fal.ai) Generator")
-st.markdown("Generate bulk jewelry variations using **Flux Pro 1.1 Ultra** via Fal.ai.")
+st.title("💎 JewelBench: Structural Variation Engine")
+st.markdown("""
+**Advanced Image-to-Image Logic:**
+*   **Denoising Strength (0.60 - 0.75):** Controls how much the design changes vs. keeping original shape.
+*   **Dynamic Prompts:** Use `[gold | platinum]` syntax to auto-randomize batches.
+""")
 
-# Sidebar
+# Sidebar Controls
 with st.sidebar:
-    api_key_input = st.text_input("Fal.ai API Key", type="password", help="Get from fal.ai/dashboard")
+    api_key_input = st.text_input("Fal.ai API Key", type="password")
     if api_key_input:
         os.environ["FAL_KEY"] = api_key_input
     
-    st.markdown("---")
+    st.markdown("### 1. Structural Parameters")
+    strength = st.slider(
+        "Denoising Strength", 0.1, 1.0, 0.65, 0.01,
+        help="0.60-0.75 is the 'Sweet Spot'. Lower = closer to original. Higher = more hallucination."
+    )
+    
+    guidance = st.slider(
+        "Guidance Scale", 1.0, 20.0, 6.0, 0.5,
+        help="Higher values force the model to follow the prompt text strictly."
+    )
+    
+    st.markdown("### 2. Batch Settings")
     batch_size = st.select_slider("Batch Size", options=[5, 10, 25, 50], value=5)
-    st.caption("Note: 'Flux Pro Ultra' is a premium model. Watch your credits.")
 
-# Main Inputs
+# Main Area
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    input_type = st.radio("Input Type", ["Text Description"])
-    # Note: Flux Pro 1.1 Ultra is primarily Text-to-Image. 
-    # For Image-to-Image, we would switch models, but let's stick to the best quality one first.
+    st.subheader("Input")
+    uploaded_file = st.file_uploader("Reference Jewelry Image", type=["jpg", "png", "jpeg"])
+    
+    default_prompt = "Macro shot of a [solitaire | halo | three-stone | pavé] engagement ring, [white gold | platinum | rose gold] band, [round cut | emerald cut | pear shape] center diamond, intricate filigree details, photorealistic, 8k, sharp focus, 3/4 angle view"
     
     base_prompt = st.text_area(
-        "Jewelry Description", 
-        "A high jewelry diamond ring, art deco style, platinum band, isometric view, neutral studio lighting, 8k resolution, macro photography"
+        "Dynamic Prompt (Use [A | B] for random variations)", 
+        default_prompt,
+        height=150
     )
 
 with col2:
-    st.info("💡 **Tip:** The prompt automatically enforces '3/4 view' and 'studio lighting' for consistent 3D references.")
+    if uploaded_file:
+        st.image(uploaded_file, caption="Structural Reference", width=300)
+    else:
+        st.info("Upload an image to define the 'Skeleton' of the jewelry.")
 
-# Generation
-if st.button("Generate Batch", type="primary"):
+# Generation Logic
+if st.button("Generate Variations", type="primary"):
     if not api_key_input:
-        st.error("Please enter your Fal.ai API Key in the sidebar.")
+        st.error("Missing API Key.")
+        st.stop()
+    if not uploaded_file:
+        st.error("Please upload a reference image.")
         st.stop()
         
+    # Prepare Input
+    input_img = Image.open(uploaded_file)
+    img_b64 = get_image_base64(input_img)
+    
     status_text = st.empty()
     progress_bar = st.progress(0)
     
-    # Create prompts for the batch (can inject random seeds/noise in prompt if needed, 
-    # but Flux is naturally stochastic)
-    
     results = []
-    seen_hashes = set()
     
-    # Using asyncio loop for concurrency
     async def run_batch():
         tasks = []
+        # Create a unique prompt for each image in the batch
         for _ in range(batch_size):
-            # We append a tiny random seed to prompt or rely on API randomness
-            # Flux Pro usually varies well on its own.
-            tasks.append(generate_variation_async(base_prompt))
+            # Resolve the dynamic prompt (e.g. pick "Halo" and "Platinum")
+            resolved_prompt = parse_dynamic_prompt(base_prompt)
+            tasks.append(generate_variation_async(img_b64, resolved_prompt, strength, guidance))
         
-        # Fal allows parallel requests. 
-        # We'll run them in chunks to avoid rate limits if user account is new.
-        completed_count = 0
-        chunk_size = 5
+        # Execute in chunks
+        chunk_size = 4  # Fal concurrency limit safe guard
+        completed = 0
         
         for i in range(0, len(tasks), chunk_size):
-            chunk = tasks[i:i + chunk_size]
+            chunk = tasks[i:i+chunk_size]
             batch_results = await asyncio.gather(*chunk)
             
-            for img_data in batch_results:
-                if img_data:
-                    h = calculate_hash(img_data)
-                    if h not in seen_hashes:
-                        seen_hashes.add(h)
-                        results.append(img_data)
+            for img_bytes, used_prompt in batch_results:
+                if img_bytes:
+                    results.append({"image": img_bytes, "prompt": used_prompt})
             
-            completed_count += len(chunk)
-            progress = min(completed_count / batch_size, 1.0)
-            progress_bar.progress(progress)
-            status_text.text(f"Generated {len(results)} images...")
+            completed += len(chunk)
+            progress_bar.progress(min(completed / batch_size, 1.0))
+            status_text.text(f"Generated {len(results)} / {batch_size} variations...")
 
     asyncio.run(run_batch())
 
-    # --- Display & Download ---
+    # --- Results ---
     if results:
-        st.success(f"Complete! Generated {len(results)} unique variations.")
+        st.success("Generation Complete!")
+        
+        # Gallery with Prompt Details
+        st.markdown("### Variations")
+        cols = st.columns(3)
+        for idx, item in enumerate(results):
+            with cols[idx % 3]:
+                st.image(item["image"], caption=f"#{idx+1}: {item['prompt'][:60]}...", use_container_width=True)
         
         # ZIP Download
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            for idx, img_bytes in enumerate(results):
-                zf.writestr(f"variation_{idx+1}.jpg", img_bytes)
+            for idx, item in enumerate(results):
+                # Clean prompt for filename
+                clean_name = re.sub(r'[^a-zA-Z0-9]', '_', item['prompt'][:30])
+                zf.writestr(f"var_{idx+1}_{clean_name}.jpg", item["image"])
         
         st.download_button(
-            "Download All (ZIP)",
+            "Download All Images (ZIP)",
             data=zip_buffer.getvalue(),
-            file_name="jewelbench_variations.zip",
+            file_name="structural_variations.zip",
             mime="application/zip"
         )
-        
-        # Gallery
-        st.markdown("### Preview")
-        cols = st.columns(4)
-        for idx, img_bytes in enumerate(results[:8]):
-            with cols[idx % 4]:
-                st.image(img_bytes, use_container_width=True)
