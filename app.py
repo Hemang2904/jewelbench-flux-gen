@@ -13,11 +13,8 @@ from PIL import Image
 # --- Configuration ---
 st.set_page_config(page_title="JewelBench - Advanced Variation", layout="wide")
 
-# Using Flux Pro (1.1) for Image-to-Image / Edit if available
-# The user requested "fal-ai/flux-2-pro/edit". 
-# Note: As of early 2026, standard endpoints are typically "fal-ai/flux-pro/v1.1/image-to-image" or similar.
-# We will default to a high-quality Pro Edit endpoint.
-MODEL_ENDPOINT = "fal-ai/flux-pro/v1.1/image-to-image"  # Updated to Pro Edit
+# Using Flux Pro 2.0 Edit as requested
+MODEL_ENDPOINT = "fal-ai/flux-2-pro/edit"
 
 def get_image_base64(image):
     """Convert PIL Image to base64 for API upload."""
